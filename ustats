@@ -1,0 +1,143 @@
+#!/bin/bash
+#
+# Userstats
+#
+
+user=$1
+version=1.0
+
+if [[ -z $user ]]
+then
+	user=`pwd | awk -F/ '{print$3}'`
+fi
+
+if [[ ! -f /var/cpanel/users/$user ]]
+then
+	echo
+	echo "Userstats $version"
+	echo "Searches all available logs to find out if a user account has been affected by any shared hosting limitations."
+	echo
+	echo "Usage: ustats [username]"
+	echo "Note: If no user provided, it will attempt to detect it from the current working directory."
+	exit 1
+fi
+echo "[!] -- Userstats $version -- "
+echo "[+] Checking for active MySQL restriction."
+if [[ `dbctl list-restricted 2> /dev/null | egrep "^[ ]*($user|USER)" | wc -l` -eq 2 ]]
+then
+	echo -e "[!]\t MySQL is currently restricted."
+fi
+echo "[+] Checking MySQL query kills (/var/log/dbgovernor-kill.log)."
+sql_kills=`grep -c $user /var/log/dbgovernor-kill.log`
+if [[ $sql_kills -ge 1 ]]
+then
+	echo -e "[-]\t $user has been killed $sql_kills times."
+	sql_date=`date -d '-1 days' "+%a %b  %-d"`"|"`date "+%a %b  %-d"`"|"`date -d '-1 days' "+%a %b %-d"`"|"`date "+%a %b %-d"`
+	echo -e "[-]\t $user has been killed "`grep $user /var/log/dbgovernor-kill.log | egrep -c "$sql_date"`" times in the last 24 hours."
+        echo -e "[-]\t First killed: "`grep $user /var/log/dbgovernor-kill.log | head -1 | awk -F[ '{print$2}' | awk -F] '{print$1}'`
+        echo -e "[-]\t Last killed: "`grep $user /var/log/dbgovernor-kill.log | tail -1 | awk -F[ '{print$2}' | awk -F] '{print$1}'`
+fi
+echo "[+] Checking MySQL db restricts (/var/log/dbgovernor-restrict.log)."
+sql_kills=`grep LIMIT_ENFORCED /var/log/dbgovernor-restrict.log | grep -c $user`
+if [[ $sql_kills -ge 1 ]]
+then
+        echo -e "[-]\t $user has been restricted $sql_kills times."
+        sql_date=`date -d '-1 days' "+%a %b  %-d"`"|"`date "+%a %b  %-d"`"|"`date -d '-1 days' "+%a %b %-d"`"|"`date "+%a %b %-d"`
+        echo -e "[-]\t $user has been restricted "`grep $user /var/log/dbgovernor-restrict.log | grep LIMIT_ENFORCED | egrep -c "$sql_date"`" times in the last 24 hours."
+	logged_sql=`find /var/lve/dbgovernor-store -type f -name $user\* ! -size 0 | wc -l`
+        echo -e "[-]\t $user has $logged_sql queries logged at /var/lve/dbgovernor-store."
+        echo -e "[-]\t First restricted: "`grep $user /var/log/dbgovernor-restrict.log | grep LIMIT_ENFORCED | head -1 | awk -F[ '{print$2}' | awk -F] '{print$1}'`
+        echo -e "[-]\t Last restricted: "`grep $user /var/log/dbgovernor-restrict.log | grep LIMIT_ENFORCED | tail -1 | awk -F[ '{print$2}' | awk -F] '{print$1}'`
+fi
+echo "[+] Checking process kills (/usr/local/prm/logs/kill.log)."
+p_kills=`grep -c $user /usr/local/prm/logs/kill.log`
+if [[ $p_kills -ge 1 ]]
+then
+        echo -e "[-]\t $user has been killed $p_kills times."
+        p_date=`date -d '-1 days' "+%b %d"`"|"`date "+%b %d"`
+        echo -e "[-]\t $user has been killed "`grep $user /usr/local/prm/logs/kill.log | egrep -c "$p_date"`" times in the last 24 hours."
+        echo -e "[-]\t First killed: "`grep $user /usr/local/prm/logs/kill.log | head -1 | awk '{print$1" "$2" "$3}'`
+        echo -e "[-]\t Last killed: "`grep $user /usr/local/prm/logs/kill.log | tail -1 | awk '{print$1" "$2" "$3}'`
+fi
+echo "[+] Checking entry process limit faults (EP)."
+ep_faults=`lveinfo -l 1000 -d --by-fault mep --period=30d --show-columns EPf,ID  | grep "$user" | awk -F'[ |]*' '{print$2}'`
+if [[ -z $ep_faults ]]
+then
+	ep_faults=0
+fi
+if [[ $ep_faults != 1 ]]
+then
+        echo -e "[-]\t $user has hit EP limit $ep_faults times in the last 30 days."
+	ep_fault_day=`lveinfo -l 1000 -d --by-fault mep --period=24h --show-columns EPf,ID | grep "$user" | awk -F'[ |]*' '{print$2}'`
+	if [[ -z $ep_fault_day ]]
+	then
+		ep_fault_day=0
+	fi
+	echo -e "[-]\t $user has hit EP limit $ep_fault_day times in the last 24 hours."
+fi
+echo "[+] Checking number of process limit faults (NPROC)."
+nproc_faults=`lveinfo -l 1000 -d --by-fault nproc --period=30d --show-columns NprocF,ID | grep "$user" | awk -F'[ |]*' '{print$2}'`
+if [[ -z $nproc_faults ]]
+then
+        nproc_faults=0
+fi
+if [[ $nproc_faults != "0" ]]
+then
+        echo -e "[-]\t $user has hit NPROC limit $nproc_faults times in the last 30 days."
+        nproc_fault_day=`lveinfo -l 1000 -d --by-fault nproc --period=30d --show-columns NprocF,ID | grep "$user" | awk -F'[ |]*' '{print$2}'`
+        if [[ -z $nproc_fault_day ]]
+        then
+                nproc_fault_day=0
+        fi
+        echo -e "[-]\t $user has hit NPROC limit $nproc_fault_day times in the last 24 hours."
+fi
+echo "[+] Checking IO usage (mIO)."
+io_hit=`lveinfo -l 1000 -d --by-fault io --period=30d --show-columns IOf,id | grep $user | awk -F'[ |]*' '{print$2}'`
+if [[ -z $io_hit ]]
+then
+	io_hit=0
+fi
+if [[ $io_hit != "0" ]]
+then
+
+▽
+	echo -e "[-]\t $user has hit IO limit $io_hit times in the last 30 days."
+	io_hit_day=`lveinfo -l 1000 -d --by-fault io  --period=1d --show-columns IOf,id | grep $user | awk -F'[ |]*' '{print$2}'`
+	if [[ -z $io_hit_day ]]
+	then
+		io_hit_day=0
+	fi
+	echo -e "[-]\t $user has hit IO limit $io_hit_day times in the last 24 hours."
+fi
+echo "[+] Checking virtual memory limit faults (VMEM)."
+vmem_faults=`lveinfo -l 1000 -d --by-fault mem --period=30d --show-columns VMemF,id | grep "$user" | awk -F'[ |]*' '{print$2}'`
+if [[ -z $vmem_faults ]]
+then
+        vmem_faults=0
+fi
+if [[ $vmem_faults != "0" ]]
+then
+        echo -e "[-]\t $user has hit VMEM limit $vmem_faults times in the last 30 days."
+        vmem_fault_day=`lveinfo -l 1000 -d --by-fault mem --period=24h --show-columns VMemF,id | grep $user | awk -F'[ |]*' '{print$2}'`
+        if [[ -z $vmem_fault_day ]]
+        then
+                vmem_fault_day=0
+        fi
+        echo -e "[-]\t $user has hit VMEM limit $vmem_fault_day times in the last 24 hours."
+fi
+echo "[+] Checking physical memory limit faults (PMEM)."
+pmem_faults=`lveinfo -l 1000 -d --by-fault pmem --period=30d --show-columns PMemF,id | egrep "$user" | awk -F'[ |]*' '{print$2}'`
+if [[ -z $pmem_faults ]]
+then
+        pmem_faults=0
+fi
+if [[ $pmem_faults != "0" ]]
+then
+        echo -e "[-]\t $user has hit PMEM limit $pmem_faults times in the last 30 days."
+        pmem_fault_day=`lveinfo -l 1000 -d --by-fault pmem --period=24h --show-columns PMemF,id | egrep "$user" | awk -F'[ |]*' '{print$2}'`
+        if [[ -z $pmem_fault_day ]]
+        then
+                pmem_fault_day=0
+        fi
+        echo -e "[-]\t $user has hit PMEM limit $pmem_fault_day times in the last 24 hours."
+fi
